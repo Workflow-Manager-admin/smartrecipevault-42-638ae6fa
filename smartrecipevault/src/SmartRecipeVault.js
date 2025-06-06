@@ -1,562 +1,467 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 
+// PUBLIC_INTERFACE
 /**
- * SmartRecipeVault main container.
- * Features:
- * - User registration/log in (Supabase auth)
- * - Ingredient management (add, list, remove; per-user via Supabase)
- * - Send ingredient list to AI model for recipe generation (stub provided)
- * - Save generated recipes (per-user; Supabase)
- * - View saved recipes (list, details)
- * 
- * Styles/app theme match requirements: primary: #84bd86, secondary: #f2a1a1, accent: #f2c98c, light theme
- * Integration with Supabase and AI recipe generator is via clear API stub functions, for easy replacement.
+ * SmartRecipeVault: Save user ingredients to Supabase, generate AI-powered recipe suggestions,
+ * and present a clear, modular UI for modern recipe exploration.
+ *
+ * - User ingredients stored in Supabase linked to authenticated user (or local fallback demo).
+ * - Ingredients: add, remove, list (CRUD; persisted).
+ * - Recipe suggestion: triggers API call using current saved ingredient list.
+ * - Clean, sectioned layout: (1) ingredient input, (2) saved ingredients, (3) Get Recipes button, (4) generated recipe section.
+ * - Handles Supabase auth, fallback to demo mode if needed.
+ *
+ * Fill in SUPABASE_URL and SUPABASE_ANON_KEY with your project keys!
  */
 
 // --- SUPABASE CONFIG ---
+const SUPABASE_URL = ""; // e.g. "https://xxxx.supabase.co"
+const SUPABASE_ANON_KEY = ""; // e.g. "eyJhbGciOiJI..."
 
-// PUBLIC_INTERFACE
-// TODO: Update with your actual Supabase project URL and public anon key!
-const SUPABASE_URL = "";
-const SUPABASE_ANON_KEY = "";
-
-// -- Supabase client stub (replace with: import { createClient } from '@supabase/supabase-js' if installed)
 let supabase = null;
-if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+let clientError = "";
+
+// Try to import @supabase/supabase-js dynamically if present
+try {
   // eslint-disable-next-line
-  supabase = window.supabase = window.createClient
-    ? window.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-    : null;
+  if (window && window.createClient) {
+    supabase = window.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  } else if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+    // fallback: require or import the package dynamically
+    // This can be replaced with: import { createClient } from '@supabase/supabase-js';
+    // supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    clientError = "Supabase JS SDK not found - run `npm install @supabase/supabase-js` in your project.";
+  }
+} catch (e) {
+  clientError = e.message;
 }
 
 // --- AI API STUB ---
-
+/**
+ * Replace this with your actual AI recipe endpoint call (e.g., OpenAI, Cohere, or custom backend).
+ * Called with the user's actual ingredient list.
+ * Returns a recipe { title, ingredients, instructions }.
+ */
 // PUBLIC_INTERFACE
-async function generateRecipeFromIngredients(ingredients) {
-  /**
-   * Replace with your real AI API call.
-   * For example: OpenAI, Cohere, or your own backend endpoint.
-   * @param ingredients {string[]} List of ingredient names
-   * @returns {object} Recipe object: {title, description, image, steps[]}
-   */
-  await new Promise((res) => setTimeout(res, 900)); // Simulate latency
+async function fetchAIRecipe(ingredients = []) {
+  // -- AI recipe stub --
+  await new Promise((res) => setTimeout(res, 1200));
   return {
-    title: "AI-Generated Veggie Stir Fry",
-    description:
-      "A delicious veggie stir fry you can make with what you have. Fast and healthy!",
-    image:
-      "https://images.unsplash.com/photo-1464306076886-debca5e8a6b0?fit=crop&w=400&q=80",
-    steps: [
-      "Chop all vegetables.",
-      "Heat oil in a wok. Add vegetables and stir fry 3–5 min.",
-      "Add soy sauce, garlic, and keep cooking until tender.",
-      "Serve over rice or noodles."
-    ],
-    usedIngredients: ingredients.slice(),
-    date: new Date().toISOString(),
+    title: "One Pot Veggie Dinner (AI Suggestion)",
+    ingredients: ingredients.map(
+      (i) => ({ name: i, amount: "as needed" })
+    ),
+    instructions: [
+      "Chop all ingredients.",
+      "Heat oil, add all chopped ingredients and stir fry for 5 minutes.",
+      "Season to taste and enjoy your meal!"
+    ]
   };
 }
 
-// --- AUTH & DATA HELPERS ---
+// --- SUPABASE UTILS ---
+// Each user gets their own row set; user_id field used for multi-tenancy.
+// If not logged in, fallbacks to localStorage demo (for easier local demo).
 
 // PUBLIC_INTERFACE
-function isSupabaseSetup() {
-  // You can check here if Supabase client is available & initialized correctly.
-  return !!supabase;
+function supabaseSetup() {
+  return SUPABASE_URL && SUPABASE_ANON_KEY && !!supabase;
 }
 
 // PUBLIC_INTERFACE
-async function signUp(email, password) {
-  // Replace with your supabase.auth.signUp(...) logic, if using real Supabase.
-  return { error: null }; // Accept all fake signups in demo mode.
+async function getCurrentUser() {
+  if (!supabaseSetup()) return null;
+  const { data: { user } = {} } = await supabase.auth.getUser();
+  return user;
 }
 
 // PUBLIC_INTERFACE
 async function signIn(email, password) {
-  return { error: null, user: { id: "user-demo" } };
+  if (!supabaseSetup()) return { error: "Supabase not ready" };
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  return { user: data?.user, error };
+}
+
+// PUBLIC_INTERFACE
+async function signUp(email, password) {
+  if (!supabaseSetup()) return { error: "Supabase not ready" };
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  return { user: data?.user, error };
 }
 
 // PUBLIC_INTERFACE
 async function signOut() {
-  // Supabase: await supabase.auth.signOut();
-  return {};
+  if (!supabaseSetup()) return {};
+  return supabase.auth.signOut();
+}
+
+// INGREDIENT CRUD (Supabase, or fallback to LocalStorage):
+const INGREDIENT_TABLE = "ingredients";
+
+// PUBLIC_INTERFACE
+async function supaGetIngredients(userId) {
+  if (!supabaseSetup()) {
+    // Fallback: LocalStorage demo mode
+    return JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
+  }
+  const { data, error } = await supabase
+    .from(INGREDIENT_TABLE)
+    .select("name")
+    .eq("user_id", userId);
+  if (error) return [];
+  return data.map((row) => row.name);
 }
 
 // PUBLIC_INTERFACE
-async function getIngredients(userId) {
-  // Replace with: Supabase SELECT ... eq("user_id", userId), ordering, etc.
-  // Demo: return from localStorage.
-  let items = JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
-  return items;
-}
-
-// PUBLIC_INTERFACE
-async function addIngredient(userId, ingredient) {
-  // Store locally for demo
-  let items = JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
-  items.push(ingredient);
-  localStorage.setItem("ingredients-" + userId, JSON.stringify(items));
+async function supaAddIngredient(userId, ingredient) {
+  if (!supabaseSetup()) {
+    let items = JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
+    items.push(ingredient);
+    localStorage.setItem("ingredients-" + userId, JSON.stringify(items));
+    return true;
+  }
+  await supabase.from(INGREDIENT_TABLE).insert([{ name: ingredient, user_id: userId }]);
   return true;
 }
 
 // PUBLIC_INTERFACE
-async function removeIngredient(userId, index) {
-  let items = JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
-  items.splice(index, 1);
-  localStorage.setItem("ingredients-" + userId, JSON.stringify(items));
+async function supaRemoveIngredient(userId, ingredient) {
+  if (!supabaseSetup()) {
+    let items = JSON.parse(localStorage.getItem("ingredients-" + userId) || "[]");
+    items = items.filter((item) => item !== ingredient);
+    localStorage.setItem("ingredients-" + userId, JSON.stringify(items));
+    return true;
+  }
+  await supabase
+    .from(INGREDIENT_TABLE)
+    .delete()
+    .eq("user_id", userId)
+    .eq("name", ingredient);
   return true;
 }
-
-// PUBLIC_INTERFACE
-async function saveRecipe(userId, recipe) {
-  // Save to localStorage for demo
-  let recipes = JSON.parse(localStorage.getItem("recipes-" + userId) || "[]");
-  recipes.unshift(recipe); // Add to start
-  localStorage.setItem("recipes-" + userId, JSON.stringify(recipes));
-  return true;
-}
-
-// PUBLIC_INTERFACE
-async function getSavedRecipes(userId) {
-  let recipes = JSON.parse(localStorage.getItem("recipes-" + userId) || "[]");
-  return recipes;
-}
-
-// --- STYLES (COLOR THEME) ---
-const THEME = {
-  primary: "#84bd86",
-  secondary: "#f2a1a1",
-  accent: "#f2c98c",
-  background: "#fff",
-  text: "#202020",
-  card: "#fafafd"
-};
 
 // --- MAIN COMPONENT ---
-
 function SmartRecipeVault() {
   // Auth state
   const [user, setUser] = useState(null);
-  const [authMode, setAuthMode] = useState("login"); // or 'register'
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
   const [authError, setAuthError] = useState("");
-  const [authLoading, setAuthLoading] = useState(false);
 
-  // Ingredients state
+  // Ingredient state
   const [ingredients, setIngredients] = useState([]);
-  const [ingredientText, setIngredientText] = useState("");
-  const [ingredientErr, setIngredientErr] = useState("");
+  const [input, setInput] = useState("");
+  const [inputErr, setInputErr] = useState("");
+  const [loadingIngredients, setLoadingIngredients] = useState(false);
 
-  // Recipe generation state
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiRecipe, setAiRecipe] = useState(null);
+  // Recipe suggestion state
+  const [fetching, setFetching] = useState(false);
+  const [recipe, setRecipe] = useState(null);
+  const [fetchError, setFetchError] = useState("");
 
-  // Recipe view/saved recipes state
-  const [viewState, setViewState] = useState("ingredients"); // | "generatedRecipe" | "savedRecipes" | "recipeDetails"
-  const [savedRecipes, setSavedRecipes] = useState([]);
-  const [selectedRecipeIdx, setSelectedRecipeIdx] = useState(null);
-
-  // --- AUTH ---
-
-  const handleAuth = async (evt) => {
-    evt.preventDefault();
-    setAuthLoading(true);
-    setAuthError("");
-    const e = evt.target?.elements?.email?.value;
-    const p = evt.target?.elements?.password?.value;
-    if (!e || !p) {
-      setAuthError("Provide both email and password.");
-      setAuthLoading(false);
-      return;
-    }
-    if (authMode === "register") {
-      const { error } = await signUp(e, p);
-      if (error) {
-        setAuthError("Could not register: " + error.message);
-        setAuthLoading(false);
-        return;
-      }
-      setAuthMode("login");
-      setAuthError("Registered! Please log in.");
-      setAuthLoading(false);
-      return;
-    }
-    // login
-    const { error, user: userObj } = await signIn(e, p);
-    if (error || !userObj) {
-      setAuthError("Invalid username or password.");
-      setAuthLoading(false);
-      return;
-    }
-    setUser({ id: userObj.id, email: e });
-    setAuthLoading(false);
-  };
-
-  const handleLogout = async () => {
-    await signOut();
-    setUser(null);
-    setIngredients([]);
-    setViewState("ingredients");
-    setAiRecipe(null);
-  };
-
-  // --- INGREDIENTS ---
-
+  // On mount, try to detect user if session exists
   useEffect(() => {
-    if (!user) return;
-    getIngredients(user.id).then((ing) => setIngredients(ing || []));
-    getSavedRecipes(user.id).then(recipes => setSavedRecipes(recipes));
-    setIngredientText("");
-    setAiRecipe(null);
-    setViewState("ingredients");
-    setSelectedRecipeIdx(null);
+    if (!supabaseSetup()) {
+      // Demo mode: Use single static user
+      setUser({ id: "demo-user" });
+      return;
+    }
+    getCurrentUser().then((u) => {
+      if (u) setUser({ id: u.id, email: u.email });
+    });
+  }, []);
+
+  // Fetch ingredients AFTER user sets in state
+  useEffect(() => {
+    setIngredients([]);
+    setRecipe(null); setFetchError("");
+    if (!user?.id) return;
+    setLoadingIngredients(true);
+    supaGetIngredients(user.id).then((ings) => {
+      setIngredients(ings || []);
+      setLoadingIngredients(false);
+    });
   }, [user]);
 
-  const handleAddIngredient = async (evt) => {
-    evt.preventDefault();
-    if (!ingredientText.trim()) {
-      setIngredientErr("Ingredient name can't be empty.");
+  // --- AUTH HANDLERS ---
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    if (!authForm.email || !authForm.password) {
+      setAuthError("Please provide both email and password.");
       return;
     }
-    if (ingredients.map((i) => i.toLowerCase()).includes(ingredientText.trim().toLowerCase())) {
-      setIngredientErr("Already added.");
+    if (!supabaseSetup()) {
+      setUser({ id: "demo-user" });
       return;
     }
-    await addIngredient(user.id, ingredientText.trim());
-    const updated = await getIngredients(user.id);
-    setIngredients(updated);
-    setIngredientText("");
-    setIngredientErr("");
+    let result;
+    if (authForm.mode === "register") {
+      result = await signUp(authForm.email, authForm.password);
+    } else {
+      result = await signIn(authForm.email, authForm.password);
+    }
+
+    if (result?.error) {
+      setAuthError(typeof result.error === "string" ? result.error : (result.error.message || "Auth failed"));
+      return;
+    }
+    if (!result?.user) {
+      setAuthError("No user returned. Try again?");
+      return;
+    }
+    setUser({ id: result.user.id, email: result.user.email || authForm.email });
+    setAuthForm({ ...authForm, password: "" });
   };
 
-  const handleRemoveIngredient = async (i) => {
-    await removeIngredient(user.id, i);
-    const updated = await getIngredients(user.id);
-    setIngredients(updated);
+  const doLogout = async () => {
+    await signOut();
+    setUser(null);
+    setRecipe(null); setAuthError("");
+    setIngredients([]);
+    setAuthForm({ email: "", password: "", mode: undefined });
   };
 
-  // --- AI RECIPE GENERATION ---
-  const handleGenerateRecipe = async () => {
-    if (ingredients.length === 0) return;
-    setAiLoading(true);
-    setAiRecipe(null);
+  // --- INGREDIENT CRUD ---
+  async function doAddIngredient(e) {
+    e.preventDefault();
+    setInputErr("");
+    const val = input.trim();
+    if (!val) {
+      setInputErr("Enter an ingredient name.");
+      return;
+    }
+    if (ingredients.find((i) => i.toLowerCase() === val.toLowerCase())) {
+      setInputErr("You already listed this ingredient.");
+      return;
+    }
+    await supaAddIngredient(user.id, val);
+    const list = await supaGetIngredients(user.id);
+    setIngredients(list);
+    setInput("");
+  }
+
+  async function doRemoveIngredient(ingredient) {
+    await supaRemoveIngredient(user.id, ingredient);
+    const list = await supaGetIngredients(user.id);
+    setIngredients(list);
+  }
+
+  // --- FETCH AI RECIPE ---
+  async function getRecipeSuggestion() {
+    setFetchError(""); setRecipe(null);
+    setFetching(true);
     try {
-      const recipe = await generateRecipeFromIngredients(ingredients);
-      setAiRecipe(recipe);
-      setViewState("generatedRecipe");
-    } finally {
-      setAiLoading(false);
+      const aiRecipe = await fetchAIRecipe(ingredients);
+      setRecipe(aiRecipe);
+    } catch (e) {
+      setFetchError("Failed to fetch recipe. Try again.");
     }
-  };
+    setFetching(false);
+  }
 
-  const handleSaveRecipe = async () => {
-    await saveRecipe(user.id, aiRecipe);
-    const updated = await getSavedRecipes(user.id);
-    setSavedRecipes(updated);
-    setViewState("savedRecipes");
-  };
+  // --- UI RENDER LOGIC ---
 
-  // --- RECIPE VIEWS ---
-
-  const gotoIngredients = () => {
-    setViewState("ingredients");
-    setAiRecipe(null);
-    setSelectedRecipeIdx(null);
-  };
-
-  const gotoSavedRecipes = () => {
-    setViewState("savedRecipes");
-    setSelectedRecipeIdx(null);
-    setAiRecipe(null);
-  };
-
-  const handleViewRecipeDetails = idx => {
-    setSelectedRecipeIdx(idx);
-    setViewState("recipeDetails");
-  };
-
-  // --- RENDER ---
-
-  // PRIMARY THEMING (inline for isolation)
-  const themeVars = {
-    "--srv-primary": THEME.primary,
-    "--srv-secondary": THEME.secondary,
-    "--srv-accent": THEME.accent,
-    "--srv-bg": THEME.background,
-    "--srv-card": THEME.card,
-    "--srv-text": THEME.text
-  };
-
+  // AUTH UI
   if (!user) {
-    // AUTH SCREEN
     return (
-      <div style={styles.screenBase(themeVars)}>
-        <div style={styles.headerBar}>
-          <span style={styles.logo}><span style={{ color: THEME.secondary }}>🍳</span> SmartRecipeVault</span>
-        </div>
-        <div style={styles.cardBox}>
-          <h2>{authMode === "login" ? "Login" : "Register"}</h2>
-          <form onSubmit={handleAuth} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <input type="email" name="email" placeholder="Email" style={styles.input} autoComplete="username" />
-            <input type="password" name="password" placeholder="Password" style={styles.input} autoComplete={authMode === "login" ? "current-password" : "new-password"} />
-            {authError && <div style={styles.error}>{authError}</div>}
-            <button type="submit" style={styles.btnMain} disabled={authLoading}>
-              {authLoading ? "…" : (authMode === "login" ? "Login" : "Create Account")}
+      <div style={STYLES.screen}>
+        <div style={STYLES.section}>
+          <h2 style={{color:THEME.primary, marginBottom:10}}>SmartRecipeVault</h2>
+          <form onSubmit={handleAuth} style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <input
+              type="email"
+              placeholder="Email"
+              value={authForm.email}
+              onChange={e => setAuthForm(f => ({ ...f, email: e.target.value }))}
+              style={STYLES.input}
+              autoComplete="username"
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={authForm.password}
+              onChange={e => setAuthForm(f => ({ ...f, password: e.target.value }))}
+              style={STYLES.input}
+              autoComplete="current-password"
+            />
+            {authError && <div style={STYLES.error}>{authError}</div>}
+            <button type="submit" style={STYLES.button}>
+              Login
+            </button>
+            <button
+              type="button"
+              style={{ ...STYLES.button, background: THEME.secondary, marginTop: 0 }}
+              onClick={() => setAuthForm(f => ({ ...f, mode: f.mode === "register" ? undefined : "register" }))}
+            >
+              {authForm.mode === "register" ? "Go to Login" : "Register"}
             </button>
           </form>
-          <button
-            style={styles.linkBtn}
-            onClick={() => {
-              setAuthMode(authMode === "login" ? "register" : "login");
-              setAuthError("");
-            }}
-          >
-            {authMode === "login" ? "New? Register instead!" : "Already have an account? Log in"}
-          </button>
-        </div>
-        <div style={{marginTop:24, fontSize:13, color:THEME.accent, opacity:0.7, textAlign:"center"}}>
-          <span>Powered by Supabase (demo mode, data is only local!)</span>
+          {clientError && (
+            <div style={{ margin: "13px 0", color: "#a44", fontSize: 14 }}>
+              {clientError}
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
-  // MAIN APP
+  // MAIN APP UI
   return (
-    <div style={styles.screenBase(themeVars)}>
-      <div style={styles.headerBar}>
-        <span style={styles.logo}><span style={{ color: THEME.secondary }}>🍳</span> SmartRecipeVault</span>
+    <div style={STYLES.screen}>
+      <div style={STYLES.headerBar}>
+        <span style={{ fontWeight: 700, color: THEME.primary }}>SmartRecipeVault</span>
         <span>
-          <button style={styles.linkBtn} onClick={gotoIngredients}>
-            Ingredients
-          </button>
-          <button style={styles.linkBtn} onClick={gotoSavedRecipes}>
-            My Recipes
-          </button>
-          <button style={styles.linkBtn} onClick={handleLogout}>
-            Logout
-          </button>
+          {user.email && (
+            <span style={{ color: THEME.secondary, fontSize: 14, marginRight: 13 }}>{user.email}</span>
+          )}
+          <button style={STYLES.buttonLink} onClick={doLogout}>Logout</button>
         </span>
       </div>
-      <div style={styles.bodyWrap}>
-        {viewState === "ingredients" && (
-          <div>
-            <h2 style={{marginBottom:0}}>My Ingredients</h2>
-            {ingredients.length > 0 ? (
-              <ul style={styles.ingredientList}>
-                {ingredients.map((ing, i) => (
-                  <li key={i} style={styles.ingredientItem}>
-                    <span>{ing}</span>
-                    <button style={styles.removeBtn} onClick={() => handleRemoveIngredient(i)} title="Remove">✖</button>
+
+      <div style={STYLES.section}>
+        {/* 1. Ingredient Input */}
+        <h2 style={{marginBottom:5}}>Ingredients</h2>
+        <form onSubmit={doAddIngredient} style={{ display:"flex", gap:8, marginBottom:10 }}>
+          <input
+            type="text"
+            placeholder="Enter ingredient (e.g. eggs, tomato)"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            style={STYLES.input}
+          />
+          <button type="submit" style={STYLES.button}>Save</button>
+        </form>
+        {inputErr && <div style={STYLES.error}>{inputErr}</div>}
+
+        {/* 2. Saved Ingredient List */}
+        <div style={{ margin: "15px 0" }}>
+          <h4>Saved Ingredients:</h4>
+          {loadingIngredients
+            ? <span>Loading...</span>
+            : (ingredients.length > 0 ? (
+              <ul style={STYLES.ingredientList}>
+                {ingredients.map((item, idx) => (
+                  <li key={item} style={STYLES.ingredientItem}>
+                    {item}
+                    <button
+                      style={STYLES.deleteBtn}
+                      onClick={() => doRemoveIngredient(item)}
+                      aria-label={"Remove " + item}
+                      title="Remove"
+                    >✕</button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <div style={{ color: "#555", margin: "16px 0" }}>You don't have any ingredients saved.</div>
-            )}
-            <form onSubmit={handleAddIngredient} style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <input
-                type="text"
-                placeholder="Add ingredient (e.g. Carrot)"
-                style={styles.input}
-                value={ingredientText}
-                onChange={e => setIngredientText(e.target.value)}
-              />
-              <button type="submit" style={styles.btnMain}>Add</button>
-            </form>
-            {ingredientErr && <div style={styles.error}>{ingredientErr}</div>}
-            <div style={{ marginTop: 32 }}>
-              <button
-                style={{
-                  ...styles.btnMain,
-                  backgroundColor: THEME.primary,
-                  minWidth: 220,
-                  opacity: ingredients.length === 0 ? 0.6 : 1,
-                  cursor: ingredients.length === 0 ? "not-allowed" : "pointer"
-                }}
-                onClick={handleGenerateRecipe}
-                disabled={ingredients.length === 0 || aiLoading}
-              >
-                {aiLoading ? "Generating Recipe…" : "Get Recipe Suggestion"}
-              </button>
-            </div>
-          </div>
-        )}
+              <span style={{ color: "#999" }}>No ingredients saved.</span>
+            ))}
+        </div>
 
-        {viewState === "generatedRecipe" && aiRecipe && (
-          <div style={styles.cardBox}>
-            <h2>{aiRecipe.title}</h2>
-            <img
-              src={aiRecipe.image}
-              alt={aiRecipe.title}
-              style={styles.recipeImage}
-            />
-            <div style={{ color: "#555", fontStyle: "italic", marginBottom: 8 }}>
-              {aiRecipe.description}
-            </div>
-            <div>
-              <strong>Used Ingredients:</strong> {aiRecipe.usedIngredients.join(", ")}
-            </div>
-            <ol style={{ marginTop: 16, marginBottom: 12 }}>
-              {aiRecipe.steps.map((step, i) => (
-                <li key={i} style={{ marginBottom: 6 }}>{step}</li>
-              ))}
-            </ol>
-            <div style={{ display: "flex", gap: 12 }}>
-              <button style={styles.btnMain} onClick={handleSaveRecipe}>Save Recipe</button>
-              <button style={styles.btnSimple} onClick={gotoIngredients}>Try Again</button>
-            </div>
-          </div>
-        )}
+        {/* 3. 'Get Recipes' Button */}
+        <div style={{ margin: "22px 0 0 0" }}>
+          <button
+            style={{
+              ...STYLES.button,
+              width: 210,
+              opacity: ingredients.length ? 1 : 0.5,
+              background: THEME.primary
+            }}
+            disabled={!ingredients.length || fetching}
+            onClick={getRecipeSuggestion}
+          >
+            {fetching ? "Loading..." : "Get Recipes"}
+          </button>
+        </div>
 
-        {viewState === "savedRecipes" && (
-          <div>
-            <h2>My Generated Recipes</h2>
-            {savedRecipes.length === 0 && (
-              <div style={{ color: "#555" }}>No saved recipes yet.</div>
-            )}
-            <div style={styles.recipeGrid}>
-              {savedRecipes.map((rec, i) => (
-                <div
-                  key={i}
-                  style={styles.recipeCard}
-                  onClick={() => handleViewRecipeDetails(i)}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`View recipe ${rec.title}`}
-                >
-                  {rec.image && (
-                    <img src={rec.image} alt={rec.title} style={styles.recipeThumb} />
+        {/* 4. Recipe Display Section */}
+        <div style={{ marginTop: 36 }}>
+          {recipe && (
+            <div style={STYLES.recipeBox}>
+              <h3 style={{ color: THEME.secondary }}>{recipe.title}</h3>
+              <div>
+                <div style={{ fontWeight: 600, margin: "12px 0 5px 0" }}>Ingredients:</div>
+                <ul>
+                  {recipe.ingredients.map((ing, i) =>
+                    <li key={i}>{ing.name} ({ing.amount})</li>
                   )}
-                  <div>
-                    <div style={{ fontWeight: 600, marginBottom: 3 }}>{rec.title}</div>
-                    <div style={{ fontSize: 13, color: "#555" }}>
-                      {rec.description}
-                    </div>
-                    <div style={{ fontSize: 12, color: THEME.primary, marginTop: 3 }}>
-                      {rec.usedIngredients ? "Ingredients: " + rec.usedIngredients.slice(0, 4).join(", ") : ''}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                </ul>
+                <div style={{ fontWeight: 600, margin: "17px 0 5px 0" }}>Instructions:</div>
+                <ol>
+                  {recipe.instructions.map((step, i) =>
+                    <li key={i}>{step}</li>
+                  )}
+                </ol>
+              </div>
             </div>
-            <button style={styles.btnSimple} onClick={gotoIngredients}>Back to Ingredients</button>
-          </div>
-        )}
-
-        {viewState === "recipeDetails" && selectedRecipeIdx !== null && savedRecipes[selectedRecipeIdx] && (
-          <div style={styles.cardBox}>
-            <h2>{savedRecipes[selectedRecipeIdx].title}</h2>
-            {savedRecipes[selectedRecipeIdx].image &&
-              <img src={savedRecipes[selectedRecipeIdx].image} alt={savedRecipes[selectedRecipeIdx].title} style={styles.recipeImage}/>}
-            <div style={{ color: "#555", fontStyle: "italic", marginBottom: 8 }}>
-              {savedRecipes[selectedRecipeIdx].description}
-            </div>
-            <div>
-              <strong>Used Ingredients:</strong>{" "}
-              {savedRecipes[selectedRecipeIdx].usedIngredients?.join(", ")}
-            </div>
-            <ol style={{ marginTop: 16, marginBottom: 12 }}>
-              {savedRecipes[selectedRecipeIdx].steps.map((step, i) => (
-                <li key={i} style={{ marginBottom: 6 }}>{step}</li>
-              ))}
-            </ol>
-            <button style={styles.btnSimple} onClick={gotoSavedRecipes}>
-              Back to Recipes
-            </button>
-          </div>
-        )}
+          )}
+          {fetchError && (
+            <div style={STYLES.error}>{fetchError}</div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-// --- STYLE OBJECTS ---
 
-const styles = {
-  screenBase: (vars) => ({
+// --- STYLE OBJECTS ---
+const THEME = {
+  primary: "#84bd86",
+  secondary: "#f2a1a1",
+  accent: "#f2c98c",
+  bg: "#f8fcf8",
+  card: "#fff",
+  text: "#202020"
+};
+
+const STYLES = {
+  screen: {
     minHeight: "100vh",
-    width: "100vw",
-    background: "var(--srv-bg)",
-    fontFamily: 'Inter, sans-serif',
-    color: "var(--srv-text)",
-    boxSizing: "border-box",
-    ...vars,
-    backgroundColor: vars["--srv-bg"],
-    padding: 0,
-    margin: 0,
-  }),
+    background: THEME.bg,
+    fontFamily: '"Inter", Verdana, sans-serif',
+    color: THEME.text
+  },
   headerBar: {
     width: "100%",
-    padding: "20px 0 20px 0",
     background: "#fff",
-    borderBottom: "2px solid #e0ede0",
+    borderBottom: "2px solid #e5f7e5",
+    padding: "19px 26px",
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     fontWeight: 600,
-    fontSize: 18,
-    position: "sticky",
-    top: 0,
-    zIndex: 100
+    fontSize: "1.18em",
+    position: "sticky", top: 0, zIndex: 99
   },
-  logo: {
-    fontSize: "1.3em",
-    fontWeight: 700,
-    letterSpacing: "0.1em",
-    color: THEME.primary,
-    display: "flex",
-    alignItems: "center",
-    gap: 5
-  },
-  bodyWrap: {
-    maxWidth: 600,
-    margin: "40px auto",
-    padding: 16,
-    minHeight: 400
-  },
-  cardBox: {
+  section: {
+    maxWidth: 480,
+    margin: "48px auto",
     background: THEME.card,
-    borderRadius: 15,
-    boxShadow: "0 2px 18px 0 #e0efef10",
-    padding: "30px 24px 24px 24px",
-    margin: "32px auto",
-    maxWidth: 420,
-    textAlign: "center"
+    borderRadius: 17,
+    boxShadow: "0 3px 14px 0 #dfeeea2c",
+    padding: "36px 24px"
   },
   input: {
     padding: "10px 13px",
-    border: `1.8px solid ${THEME.accent}`,
+    border: `1.5px solid ${THEME.accent}`,
     borderRadius: 5,
     fontSize: 16,
     outline: "none"
   },
-  btnMain: {
+  button: {
     background: THEME.primary,
     color: "#fff",
     fontWeight: 600,
     border: "none",
-    borderRadius: "5px",
-    padding: "8px 24px",
-    fontSize: 17,
-    letterSpacing: "0.03em",
-    minWidth: 96,
+    borderRadius: "6px",
+    padding: "8px 18px",
+    fontSize: 16,
+    letterSpacing: "0.02em",
     cursor: "pointer",
-    transition: "background .19s",
     margin: 0
   },
-  btnSimple: {
-    background: THEME.accent,
-    color: THEME.text,
-    fontWeight: 500,
-    border: "none",
-    borderRadius: "5px",
-    padding: "8px 24px",
-    fontSize: 15,
-    minWidth: 56,
-    margin: "0 0 0 8px",
-    cursor: "pointer"
-  },
-  linkBtn: {
+  buttonLink: {
     background: "none",
     color: THEME.secondary,
     textDecoration: "underline",
@@ -564,80 +469,48 @@ const styles = {
     fontSize: 15,
     border: "none",
     cursor: "pointer",
-    marginLeft: 11
-  },
-  ingredientList: {
-    listStyle: "none",
-    padding: 0,
-    margin: "16px 0 0 0"
-  },
-  ingredientItem: {
-    background: "#f6faf6",
-    color: "#333",
-    borderRadius: 6,
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    padding: "9px 15px",
-    fontSize: 16,
-    marginBottom: 7,
-    justifyContent: "space-between"
-  },
-  removeBtn: {
-    background: THEME.secondary,
-    border: "none",
-    color: "#fff",
-    borderRadius: "50%",
-    width: 24,
-    height: 24,
-    cursor: "pointer",
-    fontSize: 15,
-    fontWeight: 700,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    marginLeft: 7
+    marginLeft: 8
   },
   error: {
     color: "#b52424",
     fontSize: 15,
-    marginTop: 5
+    margin: "6px 0"
   },
-  recipeGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))",
-    gap: 19,
-    margin: "22px 0",
-    alignItems: "stretch"
+  ingredientList: {
+    listStyle: "none",
+    padding: 0,
+    margin: 0
   },
-  recipeCard: {
-    background: "#fff9f6",
-    borderRadius: 13,
-    boxShadow: "0 4px 16px #dedede16",
-    padding: 16,
-    cursor: "pointer",
-    transition: "box-shadow .13s, border .13s",
-    border: "1.8px solid #f3e1ca",
+  ingredientItem: {
     display: "flex",
-    flexDirection: "column",
-    marginBottom: 6
-  },
-  recipeThumb: {
-    width: "100%",
-    maxHeight: 115,
-    objectFit: "cover",
-    borderRadius: 11,
+    alignItems: "center",
+    gap: 7,
     marginBottom: 8,
-    background: "#eee"
+    fontSize: 16,
+    background: "#f6faf6",
+    borderRadius: 6,
+    padding: "7px 13px"
   },
-  recipeImage: {
-    width: "80%",
-    maxWidth: 270,
-    objectFit: "cover",
-    borderRadius: 14,
-    margin: "12px 0",
-    background: "#eee"
+  deleteBtn: {
+    background: THEME.secondary,
+    border: "none",
+    color: "#fff",
+    borderRadius: "50%",
+    width: 21,
+    height: 21,
+    cursor: "pointer",
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: "21px",
+    display: "flex", alignItems: "center", justifyContent: "center"
   },
+  recipeBox: {
+    background: "#fff8f7",
+    borderRadius: 15,
+    boxShadow: "0 2px 13px 0 #efddd515",
+    padding: "28px 22px",
+    margin: "14px 0"
+  }
 };
 
 export default SmartRecipeVault;
