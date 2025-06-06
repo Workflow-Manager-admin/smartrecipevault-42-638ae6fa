@@ -36,27 +36,29 @@ try {
   clientError = e.message;
 }
 
-// --- AI API STUB ---
 /**
- * Replace this with your actual AI recipe endpoint call (e.g., OpenAI, Cohere, or custom backend).
- * Called with the user's actual ingredient list.
- * Returns a recipe { title, ingredients, instructions }.
+ * PUBLIC_INTERFACE
+ * Securely fetch an AI-generated recipe from the backend.
+ * Calls backend /api/recipe endpoint (never exposes API keys in the frontend).
+ * Returns: { title, ingredients, instructions }
  */
-// PUBLIC_INTERFACE
 async function fetchAIRecipe(ingredients = []) {
-  // -- AI recipe stub --
-  await new Promise((res) => setTimeout(res, 1200));
-  return {
-    title: "One Pot Veggie Dinner (AI Suggestion)",
-    ingredients: ingredients.map(
-      (i) => ({ name: i, amount: "as needed" })
-    ),
-    instructions: [
-      "Chop all ingredients.",
-      "Heat oil, add all chopped ingredients and stir fry for 5 minutes.",
-      "Season to taste and enjoy your meal!"
-    ]
-  };
+  const response = await fetch('/api/recipe', {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ingredients })
+  });
+  if (!response.ok) {
+    let msg;
+    try {
+      const err = await response.json();
+      msg = err.error || err.details || response.statusText;
+    } catch (e) {
+      msg = response.statusText;
+    }
+    throw new Error(msg);
+  }
+  return response.json();
 }
 
 // --- SUPABASE UTILS ---
